@@ -2,6 +2,20 @@ provider "aws" {
   region = "us-east-2"
 }
 
+# BACKEND
+
+terraform {
+  backend "s3" {
+    bucket         = "jaspis-terraform-up-and-running-state"
+    key            = "stage/service/webserver-cluster/terraform.tfstate"
+    region         = "us-east-2"
+
+    dynamodb_table = "terraform-up-and-running-locks"
+    encrypt        = true
+  }
+}
+
+
 # Everything in this code is deployed to the VPC (Virtual Private Cloud) on AWS. Every Account has one. Isolated with
 # own IP Address spaces and virtual networks. Page 87 in Terraform Up And Running
 
@@ -27,6 +41,8 @@ provider "aws" {
 #    Name = "my-first-ec2"
 #  }
 #}
+
+# --------------------------------------- EC2 INSTANCES ---------------------------------------
 
 # For Auto Scaling (Deploying new servers if traffic goes to high or deleting if needed) use Auto Scaling Group (ASG)
 # First step would be creating a launch template (replaces the instance from above)
@@ -62,9 +78,6 @@ resource "aws_launch_template" "example" {
   }
 }
 
-
-
-
 # Now, I can create ASG itself. Each tagged with name 'terraform-asg-example'. Another parameter I have to add is subnet_ids.
 # This specifies the VPC subnets the EC2 instances should be deployed. More on page 113.
 
@@ -88,6 +101,8 @@ resource "aws_autoscaling_group" "example" {
     version = "$Latest"
   }
 }
+
+#--------------------------------------------- LOAD BALANCER ---------------------------------------------
 
 # To get a single IP address that clients can use (instead of multiple for each of the servers) I need to set up a Load Balancer.
 # Distributes requests to the EC2s. I use an Application Load Balancer (ALB, Layer 7, takes http and https)
@@ -118,28 +133,7 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# By default AWS does not allow any incoming or outgoing traffic for all resources. So I need to set up a specific.
-# security group for ALB.
 
-resource aws_security_group "alb" {
-  name = "terraform-example-alb"
-
-  # Allow HTTP requests to access ALB.
-  ingress {
-    from_port = 80
-    to_port = 80
-    protocol = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # Allow all outbound requests, so ALB can perform health checks.
-  egress {
-    from_port = 0
-    to_port = 0
-    protocol = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
 
 # Next I need to create a target group for my ASG
 
@@ -177,6 +171,8 @@ resource "aws_lb_listener_rule" "asg" {
   }
 }
 
+# --------------------------------------------- SECURITY GROUPS ---------------------------------------------
+
 # By default AWS does not allow any incoming or outgoing traffic from an EC2 instance. To allow this, I need to set up
 # a security group resource
 
@@ -190,6 +186,31 @@ resource "aws_security_group" "instance" {
     cidr_blocks = ["0.0.0.0/0"] # Stands for all ip addresses.
   }
 }
+
+# By default AWS does not allow any incoming or outgoing traffic for all resources. So I need to set up a specific.
+# security group for ALB.
+
+resource aws_security_group "alb" {
+  name = "terraform-example-alb"
+
+  # Allow HTTP requests to access ALB.
+  ingress {
+    from_port = 80
+    to_port = 80
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow all outbound requests, so ALB can perform health checks.
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# --------------------------------------------------- DATA SOURCES ---------------------------------------------------
 
 # Data sources represent a piece of read only information. They are received from the provider. It's a way to query the
 # providers API and make the data available to Terraform. The parameters are essentially filters. Default must be true
@@ -209,15 +230,7 @@ data "aws_subnets" "default" {
   }
 }
 
-# For vars in detail : page 119 in Terraform Up and Running
-variable "server_port" {
-  description = "The port the server will use for HTTP requests"
-  type = number
-  default = 8080
-}
 
-output "alb_dns_name" {
-  description = "The domain name of the load balancer"
-  value = aws_alb.Application_Load_Balancer.dns_name
-}
+
+
 
