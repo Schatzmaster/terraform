@@ -7,7 +7,6 @@ terraform {
     bucket         = "jaspis-terraform-up-and-running-state"
     key            = "stage/data-stores/mysql/terraform.tfstate"
     region         = "us-east-2"
-
     dynamodb_table = "terraform-up-and-running-locks"
     encrypt        = true
   }
@@ -20,7 +19,6 @@ resource "aws_db_instance" "example" {
   instance_class      = "db.t3.micro" # 1 virtual CPU, 1 GB memory
   skip_final_snapshot = true
   db_name             = "example_database"
-
-  username = var.db_username
-  password = var.db_password
+  username            = var.db_username
+  password            = var.db_password
 }

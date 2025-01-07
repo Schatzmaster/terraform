@@ -1,7 +1,3 @@
-provider "aws" {
-  region = "us-east-2"
-}
-
 # BACKEND
 
 terraform {
@@ -13,6 +9,16 @@ terraform {
     dynamodb_table = "terraform-up-and-running-locks"
     encrypt        = true
   }
+}
+
+# LOCALS
+
+locals {
+  http_port    = 80
+  any_port     = 0
+  any_protocol = "-1"
+  tcp_protocol = "tcp"
+  all_ips      = ["0.0.0.0/0"] # Stands for all ip addresses
 }
 
 
@@ -42,20 +48,24 @@ terraform {
 #  }
 #}
 
-# --------------------------------------- EC2 INSTANCES ---------------------------------------
+# ------------------------------------------------ EC2 INSTANCES ------------------------------------------------
 
 # For Auto Scaling (Deploying new servers if traffic goes to high or deleting if needed) use Auto Scaling Group (ASG)
 # First step would be creating a launch template (replaces the instance from above)
 
 
 resource "aws_launch_template" "example" {
-  name          = "example-launch-template"
+  name          = "${var.cluster_name}-example-launch-template"
   image_id      = "ami-0fb653ca2d3203ac1"
-  instance_type = "t2.micro"
+  instance_type = var.instance_type
 
   vpc_security_group_ids = [aws_security_group.instance.id]
 # This user data script is getting longer and longer. To externalize this, I can use tf templatefile function. Page 190.
-  user_data = base64encode(templatefile("user-data.sh", {
+# The templatefile function takes the relative path. This relativ path is relativ to the current working directory. So,
+# that works only if I run 'terraform apply' in the same directory where I call the templatefile function
+#  (so I have to run apply in the module main.tf file).
+# I can solve this by using a 'path reference' which is of form of path.<TYPE> (p. 218)
+  user_data = base64encode(templatefile("${path.module}/user-data.sh", {
     server_port = var.server_port
     db_address  = data.terraform_remote_state.db.outputs.db_address
     db_port     = data.terraform_remote_state.db.outputs.port
@@ -65,7 +75,7 @@ resource "aws_launch_template" "example" {
     resource_type = "instance"
 
     tags = {
-      Name = "example-launch-template"
+      Name = "${var.cluster_name}-example-launch-template"
     }
   }
 
@@ -86,13 +96,13 @@ resource "aws_autoscaling_group" "example" {
   target_group_arns = [aws_lb_target_group.asg.arn]
   health_check_type = "ELB"
 
-  max_size = 10
-  min_size = 2
+  max_size = var.max_size
+  min_size = var.max_size
 
   tag {
     key                 = "Name"
     propagate_at_launch = true
-    value               = "terraform-asg-example"
+    value               = "${var.cluster_name}-terraform-asg-example"
   }
 
   launch_template {
@@ -107,7 +117,7 @@ resource "aws_autoscaling_group" "example" {
 # Distributes requests to the EC2s. I use an Application Load Balancer (ALB, Layer 7, takes http and https)
 
 resource "aws_alb" "Application_Load_Balancer" {
-  name = "terraform-asg-example"
+  name = "${var.cluster_name}-asg-example"
   load_balancer_type = "application"
   subnets = data.aws_subnets.default.ids
   security_groups = [aws_security_group.alb.id]
@@ -117,7 +127,7 @@ resource "aws_alb" "Application_Load_Balancer" {
 
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_alb.Application_Load_Balancer.arn
-  port = 80
+  port = local.http_port
   protocol = "HTTP"
 
   # By default, return a simple 404 page, if no requests match any listener rules
@@ -137,7 +147,7 @@ resource "aws_lb_listener" "http" {
 # Next I need to create a target group for my ASG
 
 resource "aws_lb_target_group" "asg" {
-  name = "terraform-asg-example"
+  name = "${var.cluster_name}-asg-example"
   port = var.server_port
   protocol = "HTTP"
   vpc_id = data.aws_vpc.default.id
@@ -176,36 +186,68 @@ resource "aws_lb_listener_rule" "asg" {
 # a security group resource
 
 resource "aws_security_group" "instance" {
-  name = "terraform-example-instance"
-
-  ingress {
-    from_port = var.server_port
-    to_port = var.server_port
-    protocol = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Stands for all ip addresses.
-  }
+  name = "${var.cluster_name}-instance"
 }
 
+resource "aws_security_group_rule" "https-inbound" {
+  type = "ingress"
+  security_group_id = aws_security_group.instance.id
+
+  from_port         = var.server_port
+  protocol          = local.tcp_protocol
+  to_port           = var.server_port
+  cidr_blocks       = local.all_ips
+}
+
+resource "aws_security_group_rule" "https-inbound-alb" {
+  type = "ingress"
+  security_group_id = aws_security_group.alb.id
+
+  from_port         = var.server_port
+  protocol          = local.tcp_protocol
+  to_port           = var.server_port
+  cidr_blocks       = local.all_ips
+}
+
+resource "aws_security_group_rule" "allow_all_outbound" {
+  type              = "egress"
+  security_group_id = aws_security_group.instance.id
+
+  from_port         = local.any_port
+  protocol          = local.any_protocol
+  to_port           = local.any_port
+  cidr_blocks       = local.all_ips
+}
+
+resource "aws_security_group_rule" "allow_all_outbound_alb" {
+  type              = "egress"
+  security_group_id = aws_security_group.alb.id
+
+  from_port         = local.any_port
+  protocol          = local.any_protocol
+  to_port           = local.any_port
+  cidr_blocks       = local.all_ips
+}
 # By default AWS does not allow any incoming or outgoing traffic for all resources. So I need to set up a specific.
 # security group for ALB.
 
 resource aws_security_group "alb" {
-  name = "terraform-example-alb"
+  name = "${var.cluster_name}-alb"
 
   # Allow HTTP requests to access ALB.
   ingress {
-    from_port = 80
-    to_port = 80
-    protocol = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port = local.http_port
+    to_port = local.http_port
+    protocol = local.tcp_protocol
+    cidr_blocks = local.all_ips
   }
 
   # Allow all outbound requests, so ALB can perform health checks.
   egress {
-    from_port = 0
-    to_port = 0
-    protocol = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port = local.any_port
+    to_port = local.any_port
+    protocol = local.any_protocol
+    cidr_blocks = local.all_ips
   }
 }
 
@@ -233,8 +275,8 @@ data "terraform_remote_state" "db" {
   backend = "s3"
 
   config = {
-    bucket = "jaspis-terraform-up-and-running-state"
-    key    = "stage/data-stores/mysql/terraform.tfstate"
+    bucket = var.db_remote_state_bucket
+    key    = var.db_remote_state_key
     region = "us-east-2"
   }
 }
